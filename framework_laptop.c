@@ -72,6 +72,7 @@ struct ec_response_privacy_switches_check {
 	uint8_t camera;
 } __ec_align1;
 
+// Also update the charge_limit_control function to handle min_percentage
 static int charge_limit_control(enum ec_chg_limit_control_modes modes, uint8_t max_percentage) {
 	struct {
 		struct cros_ec_command msg;
@@ -100,6 +101,9 @@ static int charge_limit_control(enum ec_chg_limit_control_modes modes, uint8_t m
 
 	params->modes = modes;
 	params->max_percentage = max_percentage;
+	
+	// When just getting limits or setting max only, we don't need to specify min
+	// The EC will maintain the current min value
 
 	ret = cros_ec_cmd_xfer_status(ec, msg);
 	if (ret < 0) {
@@ -217,6 +221,130 @@ static ssize_t battery_set_threshold(const char *buf, size_t count)
 
 	return count;
 }
+static ssize_t battery_get_start_threshold(char *buf)
+{
+	int ret;
+	struct ec_response_chg_limit_control resp;
+	struct ec_params_ec_chg_limit_control params;
+	struct cros_ec_command *msg;
+
+	if (!ec_device)
+		return -ENODEV;
+
+	struct cros_ec_device *ec = dev_get_drvdata(ec_device);
+	
+	// Allocate memory for the command
+	msg = kzalloc(sizeof(*msg) + max(sizeof(params), sizeof(resp)), GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+	
+	// Initialize command
+	msg->version = 0;
+	msg->command = EC_CMD_CHARGE_LIMIT_CONTROL;
+	msg->outsize = sizeof(params);
+	msg->insize = sizeof(resp);
+	
+	// Set up params in the data area
+	params.modes = CHG_LIMIT_GET_LIMIT;
+	params.max_percentage = 0;  // Not used for GET_LIMIT
+	params.min_percentage = 0;  // Not used for GET_LIMIT
+	
+	// Copy params to the data area
+	memcpy(msg->data, &params, sizeof(params));
+
+	ret = cros_ec_cmd_xfer_status(ec, msg);
+	if (ret < 0) {
+		kfree(msg);
+		return -EIO;
+	}
+
+	// Copy response from the data area
+	memcpy(&resp, msg->data, sizeof(resp));
+	kfree(msg);
+	
+	return sysfs_emit(buf, "%d\n", (int)resp.min_percentage);
+}
+
+static ssize_t battery_set_start_threshold(const char *buf, size_t count)
+{
+	int ret;
+	int value;
+	struct ec_response_chg_limit_control resp;
+	struct ec_params_ec_chg_limit_control params;
+	struct cros_ec_command *msg;
+
+	ret = kstrtouint(buf, 10, &value);
+	if (ret)
+		return ret;
+
+	if (value > 100)
+		return -EINVAL;
+
+	// First get the current max threshold
+	if (!ec_device)
+		return -ENODEV;
+
+	struct cros_ec_device *ec = dev_get_drvdata(ec_device);
+	
+	// Allocate memory for the command
+	msg = kzalloc(sizeof(*msg) + max(sizeof(params), sizeof(resp)), GFP_KERNEL);
+	if (!msg)
+		return -ENOMEM;
+	
+	// Initialize command for GET operation
+	msg->version = 0;
+	msg->command = EC_CMD_CHARGE_LIMIT_CONTROL;
+	msg->outsize = sizeof(params);
+	msg->insize = sizeof(resp);
+	
+	// Set up params for GET in the data area
+	params.modes = CHG_LIMIT_GET_LIMIT;
+	params.max_percentage = 0;  // Not used for GET_LIMIT
+	params.min_percentage = 0;  // Not used for GET_LIMIT
+	
+	// Copy params to the data area
+	memcpy(msg->data, &params, sizeof(params));
+
+	ret = cros_ec_cmd_xfer_status(ec, msg);
+	if (ret < 0) {
+		kfree(msg);
+		return -EIO;
+	}
+
+	// Copy response from the data area
+	memcpy(&resp, msg->data, sizeof(resp));
+	
+	// Now set both min and max
+	params.modes = CHG_LIMIT_SET_LIMIT;
+	params.max_percentage = resp.max_percentage;
+	params.min_percentage = (uint8_t)value;
+	
+	// Copy new params to the data area
+	memcpy(msg->data, &params, sizeof(params));
+
+	ret = cros_ec_cmd_xfer_status(ec, msg);
+	kfree(msg);
+	
+	if (ret < 0)
+		return -EIO;
+
+	return count;
+}
+
+
+static ssize_t charge_control_start_threshold_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	return battery_get_start_threshold(buf);
+}
+
+static ssize_t charge_control_start_threshold_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	return battery_set_start_threshold(buf, count);
+}
+
+static DEVICE_ATTR_RW(charge_control_start_threshold);
 
 static ssize_t charge_control_end_threshold_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -232,10 +360,13 @@ static ssize_t charge_control_end_threshold_store(struct device *dev,
 
 static DEVICE_ATTR_RW(charge_control_end_threshold);
 
+// Update the framework_laptop_battery_attrs array to include the new attribute
 static struct attribute *framework_laptop_battery_attrs[] = {
 	&dev_attr_charge_control_end_threshold.attr,
+	&dev_attr_charge_control_start_threshold.attr,
 	NULL,
 };
+
 
 ATTRIBUTE_GROUPS(framework_laptop_battery);
 

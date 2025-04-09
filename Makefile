@@ -9,9 +9,9 @@ KDIR ?= /lib/modules/`uname -r`/build
 modules:
 
 install:
- $(MAKE) -C $(KDIR) M=$$PWD modules_install
- depmod -a
+	$(MAKE) -C $(KDIR) M=$$PWD modules_install
+	depmod -a
 
 %:
- $(MAKE) -C $(KDIR) M=$$PWD $@
+	$(MAKE) -C $(KDIR) M=$$PWD $@
 endif

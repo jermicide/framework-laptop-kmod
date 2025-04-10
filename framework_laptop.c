@@ -667,12 +667,12 @@ static const struct dmi_system_id framework_laptop_dmi_table[] __initconst = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Laptop"),
 		},
 	},
-	{ /* sentinel */ }
-};
+	{/* sentinel */}};
 MODULE_DEVICE_TABLE(dmi, framework_laptop_dmi_table);
 
-static int device_match_cros_ec(struct device *dev, const void* foo) {
-	const char* name = dev_name(dev);
+static int device_match_cros_ec(struct device *dev, const void *foo)
+{
+	const char *name = dev_name(dev);
 	if (strncmp(name, "cros-ec-dev", 11))
 		return 0;
 	return 1;
@@ -685,9 +685,11 @@ static int framework_probe(struct platform_device *pdev)
 	int ret = 0;
 
 	dev = &pdev->dev;
+	pr_notice(DRV_NAME ": Battery monitoring work initialized\n");
 
 	ec_device = bus_find_device(&platform_bus_type, NULL, NULL, device_match_cros_ec);
-	if (!ec_device) {
+	if (!ec_device)
+	{
 		dev_err(dev, DRV_NAME ": failed to find EC %s.\n", FRAMEWORK_LAPTOP_EC_DEVICE_NAME);
 		return -EINVAL;
 	}
@@ -699,7 +701,7 @@ static int framework_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 	data->pdev = pdev;
-
+	INIT_DELAYED_WORK(&battery_monitor_work, battery_monitor_work_fn);
 	data->kb_led.name = DRV_NAME "::kbd_backlight";
 	data->kb_led.brightness_get = kb_led_get;
 	data->kb_led.brightness_set_blocking = kb_led_set;
@@ -725,10 +727,12 @@ static int framework_probe(struct platform_device *pdev)
 #endif
 
 	struct cros_ec_device *ec = dev_get_drvdata(ec_device);
-	if (ec->cmd_readmem) {
+	if (ec->cmd_readmem)
+	{
 		// Count the number of fans
 		size_t fan_count;
-		if (ec_count_fans(&fan_count) < 0) {
+		if (ec_count_fans(&fan_count) < 0)
+		{
 			dev_err(dev, DRV_NAME ": failed to count fans.\n");
 			return -EINVAL;
 		}
@@ -739,10 +743,11 @@ static int framework_probe(struct platform_device *pdev)
 			dev, DRV_NAME, NULL, fw_hwmon_groups);
 		if (IS_ERR(data->hwmon_dev))
 			return PTR_ERR(data->hwmon_dev);
-
-	} else {
+	}
+	else
+	{
 		dev_err(dev, DRV_NAME ": fan readings could not be enabled for this EC %s.\n",
-		FRAMEWORK_LAPTOP_EC_DEVICE_NAME);
+				FRAMEWORK_LAPTOP_EC_DEVICE_NAME);
 	}
 
 	battery_hook_register(&framework_laptop_battery_hook);
@@ -789,7 +794,8 @@ static int __init framework_laptop_init(void)
 {
 	int ret;
 
-	if (!dmi_check_system(framework_laptop_dmi_table)) {
+	if (!dmi_check_system(framework_laptop_dmi_table))
+	{
 		pr_err(DRV_NAME ": unsupported system.\n");
 		return -ENODEV;
 	}

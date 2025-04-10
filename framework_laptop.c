@@ -79,41 +79,47 @@
  } __ec_align1;
  
  static int charge_limit_control(enum ec_chg_limit_control_modes modes, uint8_t max_percentage) {
-	 struct {
-		 struct cros_ec_command msg;
-		 union {
-			 struct ec_params_ec_chg_limit_control params;
-			 struct ec_response_chg_limit_control resp;
-		 };
-	 } __packed buf;
-	 struct ec_params_ec_chg_limit_control *params = &buf.params;
-	 struct ec_response_chg_limit_control *resp = &buf.resp;
-	 struct cros_ec_command *msg = &buf.msg;
-	 struct cros_ec_device *ec;
-	 int ret;
- 
-	 if (!ec_device)
-		 return -ENODEV;
- 
-	 ec = dev_get_drvdata(ec_device);
- 
-	 memset(&buf, 0, sizeof(buf));
- 
-	 msg->version = 0;
-	 msg->command = EC_CMD_CHARGE_LIMIT_CONTROL;
-	 msg->outsize = sizeof(*params);
-	 msg->insize = sizeof(*resp);
- 
-	 params->modes = modes;
-	 params->max_percentage = max_percentage;
- 
-	 ret = cros_ec_cmd_xfer_status(ec, msg);
-	 if (ret < 0) {
-		 return -EIO;
-	 }
- 
-	 return resp->max_percentage;
- }
+    struct {
+        struct cros_ec_command msg;
+        union {
+            struct ec_params_ec_chg_limit_control params;
+            struct ec_response_chg_limit_control resp;
+        };
+    } __packed buf;
+    struct ec_params_ec_chg_limit_control *params = &buf.params;
+    struct ec_response_chg_limit_control *resp = &buf.resp;
+    struct cros_ec_command *msg = &buf.msg;
+    struct cros_ec_device *ec;
+    int ret;
+
+    if (!ec_device)
+        return -ENODEV;
+
+    ec = dev_get_drvdata(ec_device);
+
+    memset(&buf, 0, sizeof(buf));
+
+    msg->version = 0;
+    msg->command = EC_CMD_CHARGE_LIMIT_CONTROL;
+    msg->outsize = sizeof(*params);
+    msg->insize = sizeof(*resp);
+
+    params->modes = modes;
+    params->max_percentage = max_percentage;
+    params->min_percentage = stored_min_percentage;  // Always send the min percentage
+
+    pr_notice(DRV_NAME ": Sending charge control command: mode=%d, max=%d%%, min=%d%%\n", 
+             modes, max_percentage, stored_min_percentage);
+
+    ret = cros_ec_cmd_xfer_status(ec, msg);
+    if (ret < 0) {
+        pr_err(DRV_NAME ": EC command failed with error %d\n", ret);
+        return -EIO;
+    }
+
+    pr_notice(DRV_NAME ": EC returned max threshold: %d%%\n", resp->max_percentage);
+    return resp->max_percentage;
+}
  
  /* Function to monitor battery level and control charging based on thresholds */
  static void battery_monitor_work_fn(struct work_struct *work)
@@ -123,14 +129,18 @@
 	 int current_max;
 	 int ret;
  
+	 pr_notice(DRV_NAME ": Battery monitoring work started\n");
+ 
 	 if (!bat_psy) {
 		 /* Try to find the battery power supply if not already found */
 		 bat_psy = power_supply_get_by_name("BAT1");
 		 if (!bat_psy) {
+			 pr_notice(DRV_NAME ": Battery power supply not found, will retry later\n");
 			 /* Retry later */
 			 schedule_delayed_work(&battery_monitor_work, HZ * 10);
 			 return;
 		 }
+		 pr_notice(DRV_NAME ": Battery power supply found\n");
 	 }
  
 	 /* Get current battery capacity */
@@ -140,6 +150,7 @@
 		 goto reschedule;
 	 }
 	 bat_capacity = val.intval;
+	 pr_notice(DRV_NAME ": Current battery capacity: %d%%\n", bat_capacity);
  
 	 /* Get current max threshold */
 	 ret = charge_limit_control(CHG_LIMIT_GET_LIMIT, 0);
@@ -148,25 +159,52 @@
 		 goto reschedule;
 	 }
 	 current_max = ret;
+	 pr_notice(DRV_NAME ": Current max threshold: %d%%\n", current_max);
+	 pr_notice(DRV_NAME ": Current min threshold: %d%%\n", stored_min_percentage);
+	 pr_notice(DRV_NAME ": Start threshold enabled: %s\n", start_threshold_enabled ? "yes" : "no");
  
 	 if (start_threshold_enabled) {
 		 if (bat_capacity <= stored_min_percentage) {
 			 /* Below min threshold - enable charging by setting to max */
+			 pr_notice(DRV_NAME ": Battery below min threshold (%d%%), enabling charging\n", 
+					  stored_min_percentage);
 			 ret = charge_limit_control(CHG_LIMIT_OVERRIDE, 100);
 			 if (ret < 0) {
 				 pr_err(DRV_NAME ": Failed to enable charging\n");
+			 } else {
+				 pr_notice(DRV_NAME ": Charging enabled successfully\n");
 			 }
 		 } else if (bat_capacity >= current_max) {
-			 /* Above max threshold - disable charging */
+			 /* Above max threshold - disable charging more aggressively */
+			 pr_notice(DRV_NAME ": Battery above max threshold (%d%%), limiting charging\n", 
+					  current_max);
+			 
+			 // First set the limit
 			 ret = charge_limit_control(CHG_LIMIT_SET_LIMIT, current_max);
 			 if (ret < 0) {
 				 pr_err(DRV_NAME ": Failed to set charge limit\n");
+			 } else {
+				 pr_notice(DRV_NAME ": Charge limit set successfully\n");
+				 
+				 // Then explicitly disable charging
+				 ret = charge_limit_control(CHG_LIMIT_DISABLE,0);
+				 if (ret < 0) {
+					 pr_err(DRV_NAME ": Failed to disable charging\n");
+				 } else {
+					 pr_notice(DRV_NAME ": Charging explicitly disabled\n");
+				 }
 			 }
+		 } else {
+			 pr_notice(DRV_NAME ": Battery level (%d%%) within thresholds, no action needed\n", 
+					  bat_capacity);
 		 }
+	 } else {
+		 pr_notice(DRV_NAME ": Start threshold disabled, no monitoring action needed\n");
 	 }
  
  reschedule:
 	 /* Check every minute */
+	 pr_notice(DRV_NAME ": Rescheduling battery monitoring work\n");
 	 schedule_delayed_work(&battery_monitor_work, HZ * 60);
  }
  
